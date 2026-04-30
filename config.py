@@ -1,10 +1,11 @@
 # ============================================================
 #  H1/M5 SFP Scanner — Configuration
 # ============================================================
+import os
 
-# --- Telegram ---
-TELEGRAM_BOT_TOKEN = "8248929173:AAGtYvZUitIsyz3zxSpcFdG4IuTQfbO6myU"
-TELEGRAM_CHAT_ID   = "771263170"
+# --- Telegram (set these as environment variables on Railway) ---
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "YOUR_CHAT_ID_HERE")
 
 # --- Binance ---
 BINANCE_BASE_URL = "https://fapi.binance.com"   # USDT Perps
