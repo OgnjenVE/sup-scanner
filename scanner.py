@@ -1,13 +1,13 @@
 """
 scanner.py  —  Main loop: scans coins every 60s for H1 SFP → M5 MSB + Breaker
+Uses OKX USDT Perps (works from cloud servers without geo-blocking)
 """
 import time
 import traceback
 from datetime import datetime, timezone
 
-import requests
 from config import SYMBOLS, SCAN_INTERVAL_SEC, MSB_WATCH_HOURS, SWING_LOOKBACK
-from binance import get_candles, BASE_URLS
+from okx import get_candles, validate_symbol, to_okx_symbol
 from strategy import detect_sfp, detect_msb_and_breaker
 from telegram import alert_sfp, alert_msb_breaker
 
@@ -21,25 +21,13 @@ def now_ts() -> float:
 
 
 def validate_symbols(symbols: list[str]) -> list[str]:
-    """Test each symbol, trying all base URLs. Skip truly invalid ones."""
-    print("[INIT] Validating symbols against Binance futures...")
+    """Test each symbol against OKX on startup."""
+    print("[INIT] Validating symbols against OKX...")
     valid, invalid = [], []
     for s in symbols:
-        ok = False
-        for base_url in BASE_URLS:
-            try:
-                r = requests.get(
-                    f"{base_url}/fapi/v1/klines",
-                    params={"symbol": s, "interval": "1h", "limit": 3},
-                    timeout=5
-                )
-                if r.status_code == 200:
-                    ok = True
-                    break
-            except Exception:
-                continue
+        ok = validate_symbol(s)
         (valid if ok else invalid).append(s)
-        time.sleep(0.05)
+        time.sleep(0.1)
 
     if invalid:
         print(f"[INIT] Skipping {len(invalid)} invalid symbols: {invalid}")
@@ -48,7 +36,8 @@ def validate_symbols(symbols: list[str]) -> list[str]:
 
 
 def scan_h1(symbol: str):
-    candles = get_candles(symbol, "1h", limit=SWING_LOOKBACK + 10)
+    okx_sym = to_okx_symbol(symbol)
+    candles = get_candles(okx_sym, "1h", limit=SWING_LOOKBACK + 10)
     if not candles:
         return
 
@@ -87,8 +76,9 @@ def scan_m5(symbol: str, state: dict) -> bool:
     if state["msb_alerted"]:
         return True
 
+    okx_sym = to_okx_symbol(symbol)
     m5_limit = int(MSB_WATCH_HOURS * 60 / 5) + 10
-    candles = get_candles(symbol, "5m", limit=m5_limit)
+    candles = get_candles(okx_sym, "5m", limit=m5_limit)
     if not candles:
         return True
 
@@ -106,7 +96,7 @@ def scan_m5(symbol: str, state: dict) -> bool:
 
 def run():
     print("=" * 55)
-    print("  H1/M5 SFP Scanner — Starting Up")
+    print("  H1/M5 SFP Scanner — Starting Up (OKX)")
     print(f"  Configured symbols : {len(SYMBOLS)}")
     print(f"  SFP freshness window: {SFP_MAX_AGE_SECONDS}s (1 H1 candle)")
     print(f"  MSB watch window   : {MSB_WATCH_HOURS}h")
@@ -114,7 +104,7 @@ def run():
 
     valid_symbols = validate_symbols(SYMBOLS)
     if not valid_symbols:
-        print("[ERROR] No valid symbols found. Check Binance connectivity.")
+        print("[ERROR] No valid symbols found.")
         return
 
     print("\n[READY] Scanner running. Ctrl+C to stop.\n")
