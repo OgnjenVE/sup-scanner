@@ -6,16 +6,13 @@ import traceback
 from datetime import datetime, timezone
 
 import requests
-from config import SYMBOLS, SCAN_INTERVAL_SEC, MSB_WATCH_HOURS, SWING_LOOKBACK, BINANCE_BASE_URL
-from binance import get_candles
+from config import SYMBOLS, SCAN_INTERVAL_SEC, MSB_WATCH_HOURS, SWING_LOOKBACK
+from binance import get_candles, BASE_URLS
 from strategy import detect_sfp, detect_msb_and_breaker
 from telegram import alert_sfp, alert_msb_breaker
 
 
-# ── State tracking ──────────────────────────────────────────
 active_sfps: dict = {}
-
-# One H1 candle = 3600 seconds. Only alert SFPs fresher than this.
 SFP_MAX_AGE_SECONDS = 3600
 
 
@@ -24,35 +21,33 @@ def now_ts() -> float:
 
 
 def validate_symbols(symbols: list[str]) -> list[str]:
-    """Test each symbol against Binance futures on startup. Skip invalid ones."""
+    """Test each symbol, trying all base URLs. Skip truly invalid ones."""
     print("[INIT] Validating symbols against Binance futures...")
     valid, invalid = [], []
     for s in symbols:
-        try:
-            r = requests.get(
-                f"{BINANCE_BASE_URL}/fapi/v1/klines",
-                params={"symbol": s, "interval": "1h", "limit": 3},
-                timeout=5
-            )
-            (valid if r.status_code == 200 else invalid).append(s)
-        except Exception:
-            invalid.append(s)
+        ok = False
+        for base_url in BASE_URLS:
+            try:
+                r = requests.get(
+                    f"{base_url}/fapi/v1/klines",
+                    params={"symbol": s, "interval": "1h", "limit": 3},
+                    timeout=5
+                )
+                if r.status_code == 200:
+                    ok = True
+                    break
+            except Exception:
+                continue
+        (valid if ok else invalid).append(s)
         time.sleep(0.05)
 
     if invalid:
-        print(f"[INIT] Skipping {len(invalid)} symbols not on Binance futures: {invalid}")
+        print(f"[INIT] Skipping {len(invalid)} invalid symbols: {invalid}")
     print(f"[INIT] Scanning {len(valid)} valid symbols.")
     return valid
 
 
 def scan_h1(symbol: str):
-    """
-    Check if a new H1 SFP has formed on the last CLOSED candle.
-    Only fires if the SFP candle closed within the last SFP_MAX_AGE_SECONDS.
-    This ensures:
-      - Real-time: alert fires within 60s of candle close
-      - Restart-safe: old SFPs that already played out are ignored
-    """
     candles = get_candles(symbol, "1h", limit=SWING_LOOKBACK + 10)
     if not candles:
         return
@@ -61,28 +56,17 @@ def scan_h1(symbol: str):
     if sfp is None:
         return
 
-    sfp_candle_time = sfp["candle"]["open_time"]  # milliseconds
-
-    # ── Freshness check ──────────────────────────────────────
-    # SFP candle open_time is in ms. The candle CLOSES at open_time + 3600000ms.
+    sfp_candle_time = sfp["candle"]["open_time"]
     sfp_close_time_sec = (sfp_candle_time + 3_600_000) / 1000
     age_seconds = now_ts() - sfp_close_time_sec
 
-    if age_seconds > SFP_MAX_AGE_SECONDS:
-        # SFP is older than 1 H1 candle — skip, already played out
+    if age_seconds > SFP_MAX_AGE_SECONDS or age_seconds < 0:
         return
 
-    if age_seconds < 0:
-        # Candle hasn't closed yet — skip
-        return
-
-    # ── Dedup check ─────────────────────────────────────────
     if symbol in active_sfps:
-        existing_time = active_sfps[symbol]["sfp"]["candle"]["open_time"]
-        if sfp_candle_time == existing_time:
-            return   # already alerted this candle
+        if active_sfps[symbol]["sfp"]["candle"]["open_time"] == sfp_candle_time:
+            return
 
-    # ── Fresh new SFP — fire alert immediately ───────────────
     active_sfps[symbol] = {
         "sfp":         sfp,
         "detected_at": now_ts(),
@@ -92,16 +76,11 @@ def scan_h1(symbol: str):
 
 
 def scan_m5(symbol: str, state: dict) -> bool:
-    """
-    For symbols with an active H1 SFP, check M5 for MSB + Breaker.
-    Returns False when the watch window has expired.
-    """
     sfp       = state["sfp"]
     detected  = state["detected_at"]
     direction = sfp["direction"]
 
-    elapsed_hours = (now_ts() - detected) / 3600
-    if elapsed_hours > MSB_WATCH_HOURS:
+    if (now_ts() - detected) / 3600 > MSB_WATCH_HOURS:
         print(f"[INFO] Watch window expired for {symbol}")
         return False
 
@@ -135,7 +114,7 @@ def run():
 
     valid_symbols = validate_symbols(SYMBOLS)
     if not valid_symbols:
-        print("[ERROR] No valid symbols found.")
+        print("[ERROR] No valid symbols found. Check Binance connectivity.")
         return
 
     print("\n[READY] Scanner running. Ctrl+C to stop.\n")
