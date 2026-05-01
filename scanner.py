@@ -1,23 +1,24 @@
 """
-scanner.py  —  Main loop: scans coins every 60s for H1 SFP → M5 MSB + Breaker
+scanner.py  —  Multi-timeframe SFP Scanner
+Timeframe pairs: H1/M5, 4H/15M, Daily/4H
 Data sources: OKX (primary) → Bybit (fallback)
 """
 import time
 import traceback
 from datetime import datetime, timezone
 
-from config import SYMBOLS, SCAN_INTERVAL_SEC, MSB_WATCH_HOURS, SWING_LOOKBACK
+from config import SYMBOLS, SCAN_INTERVAL_SEC, TIMEFRAME_CONFIGS
 import okx
 import bybit
 from strategy import detect_sfp, detect_msb_and_breaker
 from telegram import alert_sfp, alert_msb_breaker
 
 
+# active_sfps: { (symbol, label): { sfp, detected_at, msb_alerted } }
 active_sfps: dict = {}
-SFP_MAX_AGE_SECONDS = SCAN_INTERVAL_SEC * 2   # 120 seconds
+symbol_source: dict = {}
 
-# Track which source each symbol uses
-symbol_source: dict = {}  # symbol -> "okx" | "bybit"
+SFP_ALERT_MAX_AGE = SCAN_INTERVAL_SEC * 2   # 120s freshness window
 
 
 def now_ts() -> float:
@@ -25,113 +26,123 @@ def now_ts() -> float:
 
 
 def get_candles_any(symbol: str, interval: str, limit: int) -> list[dict]:
-    """Try OKX first, fall back to Bybit if OKX returns nothing."""
     source = symbol_source.get(symbol, "okx")
-
     if source == "okx":
         okx_sym = okx.to_okx_symbol(symbol)
         candles = okx.get_candles(okx_sym, interval, limit)
         if candles:
             return candles
-        # OKX failed — try Bybit
         candles = bybit.get_candles(symbol, interval, limit)
         if candles:
             symbol_source[symbol] = "bybit"
+            print(f"[INFO] {symbol} switched to Bybit")
             return candles
     else:
         candles = bybit.get_candles(symbol, interval, limit)
         if candles:
             return candles
-        # Bybit failed — try OKX
         okx_sym = okx.to_okx_symbol(symbol)
         candles = okx.get_candles(okx_sym, interval, limit)
         if candles:
             symbol_source[symbol] = "okx"
             return candles
-
     return []
 
 
 def validate_symbols(symbols: list[str]) -> list[str]:
-    """Test each symbol against OKX then Bybit. Track which source to use."""
     print("[INIT] Validating symbols (OKX → Bybit fallback)...")
     valid, invalid = [], []
-
     for s in symbols:
-        # Try OKX first
         if okx.validate_symbol(s):
             valid.append(s)
             symbol_source[s] = "okx"
-        # Try Bybit as fallback
         elif bybit.validate_symbol(s):
             valid.append(s)
             symbol_source[s] = "bybit"
-            print(f"  [INFO] {s} not on OKX, using Bybit")
+            print(f"  [INFO] {s} → Bybit")
         else:
             invalid.append(s)
         time.sleep(0.1)
 
     if invalid:
-        print(f"[INIT] Skipping {len(invalid)} symbols not found on any exchange: {invalid}")
-
-    okx_count   = sum(1 for v in symbol_source.values() if v == "okx")
-    bybit_count = sum(1 for v in symbol_source.values() if v == "bybit")
-    print(f"[INIT] {len(valid)} valid symbols — OKX: {okx_count} | Bybit: {bybit_count}")
+        print(f"[INIT] Skipping {len(invalid)} not found: {invalid}")
+    okx_c   = sum(1 for v in symbol_source.values() if v == "okx")
+    bybit_c = sum(1 for v in symbol_source.values() if v == "bybit")
+    print(f"[INIT] {len(valid)} valid — OKX: {okx_c} | Bybit: {bybit_c}")
     return valid
 
 
-def scan_h1(symbol: str):
-    candles = get_candles_any(symbol, "1h", limit=SWING_LOOKBACK + 10)
+def scan_sfp(symbol: str, tf_config: dict):
+    """Scan one symbol on the SFP timeframe."""
+    label       = tf_config["label"]
+    sfp_tf      = tf_config["sfp_tf"]
+    sfp_pivot   = tf_config["sfp_pivot"]
+    sfp_lookback= tf_config["sfp_lookback"]
+    candle_ms   = tf_config["sfp_candle_ms"]
+    watch_hours = tf_config["watch_hours"]
+
+    limit = sfp_lookback + sfp_pivot + 5
+    candles = get_candles_any(symbol, sfp_tf, limit)
     if not candles:
         return
 
-    sfp = detect_sfp(candles)
+    sfp = detect_sfp(candles, sfp_pivot, sfp_lookback)
     if sfp is None:
         return
 
     sfp_candle_time    = sfp["candle"]["open_time"]
-    sfp_close_time_sec = (sfp_candle_time + 3_600_000) / 1000
+    sfp_close_time_sec = (sfp_candle_time + candle_ms) / 1000
     age_seconds        = now_ts() - sfp_close_time_sec
 
-    if age_seconds < 0 or age_seconds > SFP_MAX_AGE_SECONDS:
+    if age_seconds < 0 or age_seconds > SFP_ALERT_MAX_AGE:
         return
 
-    if symbol in active_sfps:
-        if active_sfps[symbol]["sfp"]["candle"]["open_time"] == sfp_candle_time:
+    key = (symbol, label)
+    if key in active_sfps:
+        if active_sfps[key]["sfp"]["candle"]["open_time"] == sfp_candle_time:
             return
 
-    active_sfps[symbol] = {
+    active_sfps[key] = {
         "sfp":         sfp,
         "detected_at": now_ts(),
         "msb_alerted": False,
+        "tf_config":   tf_config,
     }
-    alert_sfp(symbol, sfp)
+    alert_sfp(symbol, sfp, label)
 
 
-def scan_m5(symbol: str, state: dict) -> bool:
+def scan_msb(symbol: str, state: dict) -> bool:
+    """Watch MSB timeframe after SFP detected."""
     sfp       = state["sfp"]
     detected  = state["detected_at"]
-    direction = sfp["direction"]
+    tf_config = state["tf_config"]
+    label     = tf_config["label"]
+    msb_tf    = tf_config["msb_tf"]
+    msb_pivot = tf_config["msb_pivot"]
+    watch_h   = tf_config["watch_hours"]
 
-    if (now_ts() - detected) / 3600 > MSB_WATCH_HOURS:
-        print(f"[INFO] Watch window expired for {symbol}")
+    if (now_ts() - detected) / 3600 > watch_h:
+        print(f"[INFO] {label} watch expired for {symbol}")
         return False
 
     if state["msb_alerted"]:
         return True
 
-    m5_limit = int(MSB_WATCH_HOURS * 60 / 5) + 10
-    candles  = get_candles_any(symbol, "5m", limit=m5_limit)
+    # Calculate how many MSB candles to fetch
+    candle_minutes = {"5m": 5, "15m": 15, "4h": 240}.get(msb_tf, 60)
+    msb_limit = int(watch_h * 60 / candle_minutes) + 10
+
+    candles = get_candles_any(symbol, msb_tf, msb_limit)
     if not candles:
         return True
 
     candles_after = [c for c in candles if c["open_time"] >= detected * 1000]
-    if len(candles_after) < 6:
+    if len(candles_after) < msb_pivot * 2 + 2:
         return True
 
-    msb = detect_msb_and_breaker(candles_after, direction)
+    msb = detect_msb_and_breaker(candles_after, sfp["direction"], msb_pivot)
     if msb:
-        alert_msb_breaker(symbol, sfp, msb)
+        alert_msb_breaker(symbol, sfp, msb, label)
         state["msb_alerted"] = True
 
     return True
@@ -139,11 +150,11 @@ def scan_m5(symbol: str, state: dict) -> bool:
 
 def run():
     print("=" * 55)
-    print("  H1/M5 SFP Scanner — Starting Up")
-    print(f"  Configured symbols  : {len(SYMBOLS)}")
-    print(f"  SFP freshness window: {SFP_MAX_AGE_SECONDS}s")
-    print(f"  MSB watch window    : {MSB_WATCH_HOURS}h")
-    print(f"  Data sources        : OKX → Bybit fallback")
+    print("  Multi-TF SFP Scanner — Starting Up")
+    print(f"  Symbols configured : {len(SYMBOLS)}")
+    print(f"  Timeframe pairs    : {[c['label'] for c in TIMEFRAME_CONFIGS]}")
+    print(f"  SFP freshness      : {SFP_ALERT_MAX_AGE}s")
+    print(f"  Data sources       : OKX → Bybit fallback")
     print("=" * 55)
 
     valid_symbols = validate_symbols(SYMBOLS)
@@ -157,33 +168,37 @@ def run():
         try:
             scan_start = time.time()
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            print(f"[{ts}] Scanning {len(valid_symbols)} symbols...")
+            print(f"[{ts}] Scanning {len(valid_symbols)} symbols x {len(TIMEFRAME_CONFIGS)} TFs...")
 
-            for symbol in valid_symbols:
-                try:
-                    scan_h1(symbol)
-                except Exception:
-                    print(f"[ERROR] H1 scan failed for {symbol}:")
-                    traceback.print_exc()
-                time.sleep(0.1)
+            # Scan SFP for all symbols and all timeframe configs
+            for tf_config in TIMEFRAME_CONFIGS:
+                for symbol in valid_symbols:
+                    try:
+                        scan_sfp(symbol, tf_config)
+                    except Exception:
+                        print(f"[ERROR] SFP scan failed {symbol} {tf_config['label']}:")
+                        traceback.print_exc()
+                    time.sleep(0.05)
 
+            # Scan MSB for all active watches
             to_remove = []
-            for symbol, state in list(active_sfps.items()):
+            for key, state in list(active_sfps.items()):
+                symbol, label = key
                 try:
-                    keep = scan_m5(symbol, state)
+                    keep = scan_msb(symbol, state)
                     if not keep:
-                        to_remove.append(symbol)
+                        to_remove.append(key)
                 except Exception:
-                    print(f"[ERROR] M5 scan failed for {symbol}:")
+                    print(f"[ERROR] MSB scan failed {symbol} {label}:")
                     traceback.print_exc()
-                time.sleep(0.1)
+                time.sleep(0.05)
 
-            for s in to_remove:
-                del active_sfps[s]
+            for k in to_remove:
+                del active_sfps[k]
 
             elapsed = time.time() - scan_start
-            watching = list(active_sfps.keys()) or ["none"]
-            print(f"[INFO] Done in {elapsed:.1f}s | Watching M5: {', '.join(watching)}")
+            watching = [f"{s}({l})" for s, l in active_sfps.keys()] or ["none"]
+            print(f"[INFO] Done in {elapsed:.1f}s | Watching: {', '.join(watching)}")
 
             time.sleep(max(0, SCAN_INTERVAL_SEC - elapsed))
 

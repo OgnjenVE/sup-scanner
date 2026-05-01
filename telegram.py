@@ -17,7 +17,6 @@ def _send(message: str):
 
 
 def fmt(price: float) -> str:
-    """Format price with appropriate decimal places based on magnitude."""
     if price >= 1000:
         return f"{price:.2f}"
     elif price >= 1:
@@ -28,13 +27,13 @@ def fmt(price: float) -> str:
         return f"{price:.8f}"
 
 
-def alert_sfp(symbol: str, sfp: dict):
+def alert_sfp(symbol: str, sfp: dict, label: str):
     direction = sfp["direction"]
     emoji = "🔴" if direction == "BEARISH" else "🟢"
     ts = datetime.utcnow().strftime("%H:%M UTC")
 
     msg = (
-        f"{emoji} <b>H1 SFP DETECTED</b>\n"
+        f"{emoji} <b>{label} SFP DETECTED</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🪙 <b>Symbol:</b> {symbol}\n"
         f"📐 <b>Direction:</b> {direction}\n"
@@ -42,13 +41,13 @@ def alert_sfp(symbol: str, sfp: dict):
         f"💵 <b>Close:</b> {fmt(sfp['candle']['close'])}\n"
         f"⏰ <b>Time:</b> {ts}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"👀 Watching M5 for MSB + Breaker..."
+        f"👀 Watching {label.split('/')[1]} for MSB + Breaker..."
     )
     _send(msg)
-    print(f"[ALERT] SFP sent for {symbol} {direction}")
+    print(f"[ALERT] {label} SFP sent for {symbol} {direction}")
 
 
-def alert_msb_breaker(symbol: str, sfp: dict, msb: dict):
+def alert_msb_breaker(symbol: str, sfp: dict, msb: dict, label: str):
     direction = msb["direction"]
     emoji = "🔴" if direction == "BEARISH" else "🟢"
     ts = datetime.utcnow().strftime("%H:%M UTC")
@@ -56,7 +55,7 @@ def alert_msb_breaker(symbol: str, sfp: dict, msb: dict):
     zone_desc = "price rallies into zone" if direction == "BEARISH" else "price dips into zone"
 
     msg = (
-        f"{emoji} <b>MSB CONFIRMED — SET YOUR ORDER</b>\n"
+        f"{emoji} <b>{label} MSB CONFIRMED — SET YOUR ORDER</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🪙 <b>Symbol:</b> {symbol}\n"
         f"📐 <b>Direction:</b> {direction}\n"
@@ -67,10 +66,10 @@ def alert_msb_breaker(symbol: str, sfp: dict, msb: dict):
         f"   Bot: {fmt(msb['breaker_low'])}\n"
         f"📌 <b>Action:</b> {action} when {zone_desc}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"📌 <b>H1 SFP Swept:</b> {fmt(sfp['swept_level'])}\n"
+        f"📌 <b>{label.split('/')[0]} SFP Swept:</b> {fmt(sfp['swept_level'])}\n"
         f"⏰ <b>Time:</b> {ts}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"⚡️ <b>Open chart and set limit order now!</b>"
     )
     _send(msg)
-    print(f"[ALERT] MSB+Breaker sent for {symbol} {direction}")
+    print(f"[ALERT] {label} MSB+Breaker sent for {symbol} {direction}")
