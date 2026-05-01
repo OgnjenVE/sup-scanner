@@ -16,6 +16,18 @@ def _send(message: str):
         print(f"[TELEGRAM ERROR] {e}")
 
 
+def fmt(price: float) -> str:
+    """Format price with appropriate decimal places based on magnitude."""
+    if price >= 1000:
+        return f"{price:.2f}"
+    elif price >= 1:
+        return f"{price:.4f}"
+    elif price >= 0.01:
+        return f"{price:.6f}"
+    else:
+        return f"{price:.8f}"
+
+
 def alert_sfp(symbol: str, sfp: dict):
     direction = sfp["direction"]
     emoji = "🔴" if direction == "BEARISH" else "🟢"
@@ -26,8 +38,8 @@ def alert_sfp(symbol: str, sfp: dict):
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🪙 <b>Symbol:</b> {symbol}\n"
         f"📐 <b>Direction:</b> {direction}\n"
-        f"📍 <b>Swept Level:</b> {sfp['swept_level']:.4f}\n"
-        f"💵 <b>Close:</b> {sfp['candle']['close']:.4f}\n"
+        f"📍 <b>Swept Level:</b> {fmt(sfp['swept_level'])}\n"
+        f"💵 <b>Close:</b> {fmt(sfp['candle']['close'])}\n"
         f"⏰ <b>Time:</b> {ts}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"👀 Watching M5 for MSB + Breaker..."
@@ -40,7 +52,6 @@ def alert_msb_breaker(symbol: str, sfp: dict, msb: dict):
     direction = msb["direction"]
     emoji = "🔴" if direction == "BEARISH" else "🟢"
     ts = datetime.utcnow().strftime("%H:%M UTC")
-
     action = "SELL LIMIT" if direction == "BEARISH" else "BUY LIMIT"
     zone_desc = "price rallies into zone" if direction == "BEARISH" else "price dips into zone"
 
@@ -49,14 +60,14 @@ def alert_msb_breaker(symbol: str, sfp: dict, msb: dict):
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🪙 <b>Symbol:</b> {symbol}\n"
         f"📐 <b>Direction:</b> {direction}\n"
-        f"🔓 <b>MSB Level Broken:</b> {msb['msb_level']:.4f}\n"
+        f"🔓 <b>MSB Level Broken:</b> {fmt(msb['msb_level'])}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📦 <b>BREAKER ZONE (your entry):</b>\n"
-        f"   Top: {msb['breaker_high']:.4f}\n"
-        f"   Bot: {msb['breaker_low']:.4f}\n"
+        f"   Top: {fmt(msb['breaker_high'])}\n"
+        f"   Bot: {fmt(msb['breaker_low'])}\n"
         f"📌 <b>Action:</b> {action} when {zone_desc}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"📌 <b>H1 SFP Swept:</b> {sfp['swept_level']:.4f}\n"
+        f"📌 <b>H1 SFP Swept:</b> {fmt(sfp['swept_level'])}\n"
         f"⏰ <b>Time:</b> {ts}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"⚡️ <b>Open chart and set limit order now!</b>"
