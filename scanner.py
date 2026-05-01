@@ -1,43 +1,87 @@
 """
 scanner.py  —  Main loop: scans coins every 60s for H1 SFP → M5 MSB + Breaker
+Data sources: OKX (primary) → Bybit (fallback)
 """
 import time
 import traceback
 from datetime import datetime, timezone
 
 from config import SYMBOLS, SCAN_INTERVAL_SEC, MSB_WATCH_HOURS, SWING_LOOKBACK
-from okx import get_candles, validate_symbol, to_okx_symbol
+import okx
+import bybit
 from strategy import detect_sfp, detect_msb_and_breaker
 from telegram import alert_sfp, alert_msb_breaker
 
 
 active_sfps: dict = {}
-
-# Only alert SFPs whose candle closed within the last 2 scan cycles
-# This prevents old SFPs firing on startup or after any delay
 SFP_MAX_AGE_SECONDS = SCAN_INTERVAL_SEC * 2   # 120 seconds
+
+# Track which source each symbol uses
+symbol_source: dict = {}  # symbol -> "okx" | "bybit"
 
 
 def now_ts() -> float:
     return datetime.now(timezone.utc).timestamp()
 
 
+def get_candles_any(symbol: str, interval: str, limit: int) -> list[dict]:
+    """Try OKX first, fall back to Bybit if OKX returns nothing."""
+    source = symbol_source.get(symbol, "okx")
+
+    if source == "okx":
+        okx_sym = okx.to_okx_symbol(symbol)
+        candles = okx.get_candles(okx_sym, interval, limit)
+        if candles:
+            return candles
+        # OKX failed — try Bybit
+        candles = bybit.get_candles(symbol, interval, limit)
+        if candles:
+            symbol_source[symbol] = "bybit"
+            return candles
+    else:
+        candles = bybit.get_candles(symbol, interval, limit)
+        if candles:
+            return candles
+        # Bybit failed — try OKX
+        okx_sym = okx.to_okx_symbol(symbol)
+        candles = okx.get_candles(okx_sym, interval, limit)
+        if candles:
+            symbol_source[symbol] = "okx"
+            return candles
+
+    return []
+
+
 def validate_symbols(symbols: list[str]) -> list[str]:
-    print("[INIT] Validating symbols against OKX...")
+    """Test each symbol against OKX then Bybit. Track which source to use."""
+    print("[INIT] Validating symbols (OKX → Bybit fallback)...")
     valid, invalid = [], []
+
     for s in symbols:
-        ok = validate_symbol(s)
-        (valid if ok else invalid).append(s)
+        # Try OKX first
+        if okx.validate_symbol(s):
+            valid.append(s)
+            symbol_source[s] = "okx"
+        # Try Bybit as fallback
+        elif bybit.validate_symbol(s):
+            valid.append(s)
+            symbol_source[s] = "bybit"
+            print(f"  [INFO] {s} not on OKX, using Bybit")
+        else:
+            invalid.append(s)
         time.sleep(0.1)
+
     if invalid:
-        print(f"[INIT] Skipping {len(invalid)} invalid: {invalid}")
-    print(f"[INIT] Scanning {len(valid)} valid symbols.")
+        print(f"[INIT] Skipping {len(invalid)} symbols not found on any exchange: {invalid}")
+
+    okx_count   = sum(1 for v in symbol_source.values() if v == "okx")
+    bybit_count = sum(1 for v in symbol_source.values() if v == "bybit")
+    print(f"[INIT] {len(valid)} valid symbols — OKX: {okx_count} | Bybit: {bybit_count}")
     return valid
 
 
 def scan_h1(symbol: str):
-    okx_sym = to_okx_symbol(symbol)
-    candles = get_candles(okx_sym, "1h", limit=SWING_LOOKBACK + 10)
+    candles = get_candles_any(symbol, "1h", limit=SWING_LOOKBACK + 10)
     if not candles:
         return
 
@@ -45,15 +89,13 @@ def scan_h1(symbol: str):
     if sfp is None:
         return
 
-    sfp_candle_time    = sfp["candle"]["open_time"]           # ms
-    sfp_close_time_sec = (sfp_candle_time + 3_600_000) / 1000  # candle close in seconds
+    sfp_candle_time    = sfp["candle"]["open_time"]
+    sfp_close_time_sec = (sfp_candle_time + 3_600_000) / 1000
     age_seconds        = now_ts() - sfp_close_time_sec
 
-    # Must have closed within the last 2 scan cycles AND not in the future
     if age_seconds < 0 or age_seconds > SFP_MAX_AGE_SECONDS:
         return
 
-    # Dedup — don't re-alert the same candle
     if symbol in active_sfps:
         if active_sfps[symbol]["sfp"]["candle"]["open_time"] == sfp_candle_time:
             return
@@ -78,9 +120,8 @@ def scan_m5(symbol: str, state: dict) -> bool:
     if state["msb_alerted"]:
         return True
 
-    okx_sym  = to_okx_symbol(symbol)
     m5_limit = int(MSB_WATCH_HOURS * 60 / 5) + 10
-    candles  = get_candles(okx_sym, "5m", limit=m5_limit)
+    candles  = get_candles_any(symbol, "5m", limit=m5_limit)
     if not candles:
         return True
 
@@ -98,10 +139,11 @@ def scan_m5(symbol: str, state: dict) -> bool:
 
 def run():
     print("=" * 55)
-    print("  H1/M5 SFP Scanner — Starting Up (OKX)")
+    print("  H1/M5 SFP Scanner — Starting Up")
     print(f"  Configured symbols  : {len(SYMBOLS)}")
-    print(f"  SFP freshness window: {SFP_MAX_AGE_SECONDS}s ({SFP_MAX_AGE_SECONDS//60} min)")
+    print(f"  SFP freshness window: {SFP_MAX_AGE_SECONDS}s")
     print(f"  MSB watch window    : {MSB_WATCH_HOURS}h")
+    print(f"  Data sources        : OKX → Bybit fallback")
     print("=" * 55)
 
     valid_symbols = validate_symbols(SYMBOLS)
