@@ -1,6 +1,5 @@
 """
 scanner.py  —  Main loop: scans coins every 60s for H1 SFP → M5 MSB + Breaker
-Uses OKX USDT Perps (works from cloud servers without geo-blocking)
 """
 import time
 import traceback
@@ -13,7 +12,10 @@ from telegram import alert_sfp, alert_msb_breaker
 
 
 active_sfps: dict = {}
-SFP_MAX_AGE_SECONDS = 3600
+
+# Only alert SFPs whose candle closed within the last 2 scan cycles
+# This prevents old SFPs firing on startup or after any delay
+SFP_MAX_AGE_SECONDS = SCAN_INTERVAL_SEC * 2   # 120 seconds
 
 
 def now_ts() -> float:
@@ -21,16 +23,14 @@ def now_ts() -> float:
 
 
 def validate_symbols(symbols: list[str]) -> list[str]:
-    """Test each symbol against OKX on startup."""
     print("[INIT] Validating symbols against OKX...")
     valid, invalid = [], []
     for s in symbols:
         ok = validate_symbol(s)
         (valid if ok else invalid).append(s)
         time.sleep(0.1)
-
     if invalid:
-        print(f"[INIT] Skipping {len(invalid)} invalid symbols: {invalid}")
+        print(f"[INIT] Skipping {len(invalid)} invalid: {invalid}")
     print(f"[INIT] Scanning {len(valid)} valid symbols.")
     return valid
 
@@ -45,13 +45,15 @@ def scan_h1(symbol: str):
     if sfp is None:
         return
 
-    sfp_candle_time = sfp["candle"]["open_time"]
-    sfp_close_time_sec = (sfp_candle_time + 3_600_000) / 1000
-    age_seconds = now_ts() - sfp_close_time_sec
+    sfp_candle_time    = sfp["candle"]["open_time"]           # ms
+    sfp_close_time_sec = (sfp_candle_time + 3_600_000) / 1000  # candle close in seconds
+    age_seconds        = now_ts() - sfp_close_time_sec
 
-    if age_seconds > SFP_MAX_AGE_SECONDS or age_seconds < 0:
+    # Must have closed within the last 2 scan cycles AND not in the future
+    if age_seconds < 0 or age_seconds > SFP_MAX_AGE_SECONDS:
         return
 
+    # Dedup — don't re-alert the same candle
     if symbol in active_sfps:
         if active_sfps[symbol]["sfp"]["candle"]["open_time"] == sfp_candle_time:
             return
@@ -76,9 +78,9 @@ def scan_m5(symbol: str, state: dict) -> bool:
     if state["msb_alerted"]:
         return True
 
-    okx_sym = to_okx_symbol(symbol)
+    okx_sym  = to_okx_symbol(symbol)
     m5_limit = int(MSB_WATCH_HOURS * 60 / 5) + 10
-    candles = get_candles(okx_sym, "5m", limit=m5_limit)
+    candles  = get_candles(okx_sym, "5m", limit=m5_limit)
     if not candles:
         return True
 
@@ -97,9 +99,9 @@ def scan_m5(symbol: str, state: dict) -> bool:
 def run():
     print("=" * 55)
     print("  H1/M5 SFP Scanner — Starting Up (OKX)")
-    print(f"  Configured symbols : {len(SYMBOLS)}")
-    print(f"  SFP freshness window: {SFP_MAX_AGE_SECONDS}s (1 H1 candle)")
-    print(f"  MSB watch window   : {MSB_WATCH_HOURS}h")
+    print(f"  Configured symbols  : {len(SYMBOLS)}")
+    print(f"  SFP freshness window: {SFP_MAX_AGE_SECONDS}s ({SFP_MAX_AGE_SECONDS//60} min)")
+    print(f"  MSB watch window    : {MSB_WATCH_HOURS}h")
     print("=" * 55)
 
     valid_symbols = validate_symbols(SYMBOLS)
