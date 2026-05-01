@@ -8,11 +8,11 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "YOUR_CHAT_ID_HERE")
 
 # --- Strategy ---
-SWING_LOOKBACK      = 50     # candles to look back for swing points
-PIVOT_LENGTH        = 10     # candles each side required for a valid swing point
-                             # 5  = picks up minor swings (too sensitive)
-                             # 10 = significant swings only (recommended)
-                             # 20 = only major structural highs/lows
+# How many H1 candles to look back for swing points (~1 day = 24, ~2 days = 48)
+SWING_LOOKBACK      = 30     # look back 30 candles (~30 hours)
+# How many candles each side must be lower/higher for a valid swing point
+# Must be less than SWING_LOOKBACK / 2
+PIVOT_LENGTH        = 10     # 10 candles each side = significant structural swing
 MSB_WATCH_HOURS     = 4      # hours to watch M5 after H1 SFP
 SCAN_INTERVAL_SEC   = 60     # how often to scan (seconds)
 
