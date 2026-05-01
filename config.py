@@ -31,3 +31,7 @@ SYMBOLS = [
     "TIAUSDT", "TONUSDT", "TRUMPUSDT", "TRXUSDT", "UNIUSDT",
     "VIRTUALUSDT", "WIFUSDT", "WLDUSDT", "XRPUSDT", "ZECUSDT",
 ]
+
+# M5 pivot length for MSB detection (candles each side)
+# Higher = only significant M5 swing points qualify as MSB levels
+M5_PIVOT_LENGTH     = 5

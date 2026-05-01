@@ -2,7 +2,7 @@
 strategy.py  —  SFP and MSB + Breaker detection logic
 Ported from LuxAlgo Swing Failure Pattern indicator (CC BY-NC-SA 4.0)
 """
-from config import SWING_LOOKBACK, PIVOT_LENGTH
+from config import SWING_LOOKBACK, PIVOT_LENGTH, M5_PIVOT_LENGTH
 
 
 def _pivot_high_at(candles: list[dict], length: int, idx: int) -> float | None:
@@ -32,9 +32,6 @@ def _pivot_low_at(candles: list[dict], length: int, idx: int) -> float | None:
 def detect_sfp(candles: list[dict], length: int = PIVOT_LENGTH) -> dict | None:
     """
     Check the last CLOSED H1 candle for an SFP.
-    candles[-1] = currently forming candle
-    candles[-2] = last fully closed candle (SFP candidate)
-
     Bearish SFP: high > swing_high AND open < swing_high AND close < swing_high
     Bullish SFP: low  < swing_low  AND open > swing_low  AND close > swing_low
     """
@@ -86,14 +83,7 @@ def detect_sfp(candles: list[dict], length: int = PIVOT_LENGTH) -> dict | None:
 
 
 def detect_msb_and_breaker(m5_candles: list[dict], sfp_direction: str) -> dict | None:
-    """
-    Alert fires when price BREAKS the MSB level (not when it returns to breaker).
-    This gives the trader time to open the chart and set a limit order at the breaker.
-
-    Also identifies and includes the breaker zone in the alert so the trader
-    knows exactly where to set their limit order.
-    """
-    if len(m5_candles) < 6:
+    if len(m5_candles) < M5_PIVOT_LENGTH * 2 + 2:
         return None
     if sfp_direction == "BEARISH":
         return _bearish_msb_breaker(m5_candles)
@@ -103,25 +93,24 @@ def detect_msb_and_breaker(m5_candles: list[dict], sfp_direction: str) -> dict |
 
 def _bearish_msb_breaker(candles: list[dict]) -> dict | None:
     """
-    Bearish: alert fires when a candle CLOSES below a M5 swing low (MSB).
-    Includes the breaker zone (last bullish candle before the break) in the alert.
+    Find significant M5 swing lows using M5_PIVOT_LENGTH.
+    Alert fires when last closed candle breaks below a swing low (MSB).
+    Breaker = last bullish candle before the break.
     """
     swing_lows = []
-    for i in range(2, len(candles) - 1):
-        pl = _pivot_low_at(candles, 2, i)
+    for i in range(M5_PIVOT_LENGTH, len(candles) - 1):
+        pl = _pivot_low_at(candles, M5_PIVOT_LENGTH, i)
         if pl is not None:
             swing_lows.append((i, pl))
 
-    # Only check the last closed candle for the MSB break
     current = candles[-2]  # last closed M5 candle
 
     for sl_idx, swing_low in reversed(swing_lows):
         if sl_idx >= len(candles) - 2:
-            continue  # swing low must be before current candle
+            continue
 
-        # MSB = current candle closes below swing low
         if current["close"] < swing_low:
-            # Find the breaker = last bullish candle before the break
+            # Find last bullish candle before the break (breaker)
             breaker_candle = None
             for i in range(len(candles) - 3, sl_idx - 1, -1):
                 if candles[i]["close"] > candles[i]["open"]:
@@ -139,31 +128,29 @@ def _bearish_msb_breaker(candles: list[dict]) -> dict | None:
                 "breaker_low":  breaker_candle["low"],
                 "current_candle": current,
             }
-
     return None
 
 
 def _bullish_msb_breaker(candles: list[dict]) -> dict | None:
     """
-    Bullish: alert fires when a candle CLOSES above a M5 swing high (MSB).
-    Includes the breaker zone (last bearish candle before the break) in the alert.
+    Find significant M5 swing highs using M5_PIVOT_LENGTH.
+    Alert fires when last closed candle breaks above a swing high (MSB).
+    Breaker = last bearish candle before the break.
     """
     swing_highs = []
-    for i in range(2, len(candles) - 1):
-        ph = _pivot_high_at(candles, 2, i)
+    for i in range(M5_PIVOT_LENGTH, len(candles) - 1):
+        ph = _pivot_high_at(candles, M5_PIVOT_LENGTH, i)
         if ph is not None:
             swing_highs.append((i, ph))
 
-    # Only check the last closed candle for the MSB break
     current = candles[-2]  # last closed M5 candle
 
     for sh_idx, swing_high in reversed(swing_highs):
         if sh_idx >= len(candles) - 2:
-            continue  # swing high must be before current candle
+            continue
 
-        # MSB = current candle closes above swing high
         if current["close"] > swing_high:
-            # Find the breaker = last bearish candle before the break
+            # Find last bearish candle before the break (breaker)
             breaker_candle = None
             for i in range(len(candles) - 3, sh_idx - 1, -1):
                 if candles[i]["close"] < candles[i]["open"]:
@@ -181,5 +168,4 @@ def _bullish_msb_breaker(candles: list[dict]) -> dict | None:
                 "breaker_low":  breaker_candle["low"],
                 "current_candle": current,
             }
-
     return None
