@@ -7,13 +7,8 @@ from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 
 def _send(message: str):
-    """Fire a Telegram message."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML",
-    }
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
         r = requests.post(url, json=payload, timeout=10)
         r.raise_for_status()
@@ -22,20 +17,17 @@ def _send(message: str):
 
 
 def alert_sfp(symbol: str, sfp: dict):
-    """Send H1 SFP alert."""
     direction = sfp["direction"]
     emoji = "🔴" if direction == "BEARISH" else "🟢"
-    swept  = sfp["swept_level"]
-    close  = sfp["candle"]["close"]
-    ts     = datetime.utcnow().strftime("%H:%M UTC")
+    ts = datetime.utcnow().strftime("%H:%M UTC")
 
     msg = (
         f"{emoji} <b>H1 SFP DETECTED</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🪙 <b>Symbol:</b> {symbol}\n"
         f"📐 <b>Direction:</b> {direction}\n"
-        f"📍 <b>Swept Level:</b> {swept:.4f}\n"
-        f"💵 <b>Close:</b> {close:.4f}\n"
+        f"📍 <b>Swept Level:</b> {sfp['swept_level']:.4f}\n"
+        f"💵 <b>Close:</b> {sfp['candle']['close']:.4f}\n"
         f"⏰ <b>Time:</b> {ts}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"👀 Watching M5 for MSB + Breaker..."
@@ -45,23 +37,29 @@ def alert_sfp(symbol: str, sfp: dict):
 
 
 def alert_msb_breaker(symbol: str, sfp: dict, msb: dict):
-    """Send M5 MSB + Breaker alert."""
     direction = msb["direction"]
     emoji = "🔴" if direction == "BEARISH" else "🟢"
     ts = datetime.utcnow().strftime("%H:%M UTC")
 
+    action = "SELL LIMIT" if direction == "BEARISH" else "BUY LIMIT"
+    zone_desc = "price rallies into zone" if direction == "BEARISH" else "price dips into zone"
+
     msg = (
-        f"{emoji} <b>MSB + BREAKER CONFIRMED</b>\n"
+        f"{emoji} <b>MSB CONFIRMED — SET YOUR ORDER</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🪙 <b>Symbol:</b> {symbol}\n"
         f"📐 <b>Direction:</b> {direction}\n"
-        f"🔓 <b>MSB Level:</b> {msb['msb_level']:.4f}\n"
-        f"📦 <b>Breaker Zone:</b> {msb['breaker_low']:.4f} — {msb['breaker_high']:.4f}\n"
-        f"💵 <b>Current Price:</b> {msb['current_candle']['close']:.4f}\n"
+        f"🔓 <b>MSB Level Broken:</b> {msb['msb_level']:.4f}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📦 <b>BREAKER ZONE (your entry):</b>\n"
+        f"   Top: {msb['breaker_high']:.4f}\n"
+        f"   Bot: {msb['breaker_low']:.4f}\n"
+        f"📌 <b>Action:</b> {action} when {zone_desc}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
         f"📌 <b>H1 SFP Swept:</b> {sfp['swept_level']:.4f}\n"
         f"⏰ <b>Time:</b> {ts}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"⚡️ <b>H1 → M5 Setup Complete!</b>"
+        f"⚡️ <b>Open chart and set limit order now!</b>"
     )
     _send(msg)
     print(f"[ALERT] MSB+Breaker sent for {symbol} {direction}")
