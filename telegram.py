@@ -55,7 +55,7 @@ def _sfp_block(sfp: dict, label: str) -> str:
 def alert_sfp(symbol: str, sfp: dict, label: str):
     direction = sfp["direction"]
     emoji = "🔴" if direction == "BEARISH" else "🟢"
-    ts = datetime.utcnow().strftime("%H:%M UTC")
+    ts = datetime.utcnow().strftime("%H:%M UTC (your local time +2h)")
     msb_tf = label.split("/")[1]
 
     candle_ms = _get_candle_ms(label)
@@ -71,7 +71,7 @@ def alert_sfp(symbol: str, sfp: dict, label: str):
         f"📍 <b>Swept Level:</b> {fmt(sfp['swept_level'])}\n"
         f"💵 <b>Close:</b> {fmt(sfp['candle']['close'])}\n"
         f"🕯 <b>Candle closed:</b> {candle_close_str}\n"
-        f"⏰ <b>Alert sent:</b> {ts}\n"
+
         f"━━━━━━━━━━━━━━━━━━\n"
         f"👀 Watching {msb_tf} for MSB + Breaker..."
     )
@@ -80,7 +80,7 @@ def alert_sfp(symbol: str, sfp: dict, label: str):
 
 
 def alert_confluence_sfp(symbol: str, sfp_list: list[tuple]):
-    ts = datetime.utcnow().strftime("%H:%M UTC")
+    ts = datetime.utcnow().strftime("%H:%M UTC (your local time +2h)")
     direction = sfp_list[-1][0]["direction"]
     emoji = "🔴" if direction == "BEARISH" else "🟢"
     blocks = "\n".join(_sfp_block(sfp, label) for sfp, label in sfp_list)
@@ -93,7 +93,7 @@ def alert_confluence_sfp(symbol: str, sfp_list: list[tuple]):
         f"━━━━━━━━━━━━━━━━━━\n"
         f"{blocks}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"⏰ <b>Alert sent:</b> {ts}\n"
+
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🔥 <b>High confluence — priority alert!</b>"
     )
@@ -104,7 +104,7 @@ def alert_confluence_sfp(symbol: str, sfp_list: list[tuple]):
 def alert_msb_breaker(symbol: str, sfp: dict, msb: dict, label: str):
     direction = msb["direction"]
     emoji = "🔴" if direction == "BEARISH" else "🟢"
-    ts = datetime.utcnow().strftime("%H:%M UTC")
+    ts = datetime.utcnow().strftime("%H:%M UTC (your local time +2h)")
     action = "SELL LIMIT" if direction == "BEARISH" else "BUY LIMIT"
     zone_desc = "price rallies into zone" if direction == "BEARISH" else "price dips into zone"
     sfp_tf = label.split("/")[0]
@@ -122,7 +122,7 @@ def alert_msb_breaker(symbol: str, sfp: dict, msb: dict, label: str):
         f"📌 <b>Action:</b> {action} when {zone_desc}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📌 <b>{sfp_tf} SFP Swept:</b> {fmt(sfp['swept_level'])}\n"
-        f"⏰ <b>Alert sent:</b> {ts}\n"
+
         f"━━━━━━━━━━━━━━━━━━\n"
         f"⚡️ <b>Open chart and set limit order now!</b>"
     )
@@ -131,7 +131,7 @@ def alert_msb_breaker(symbol: str, sfp: dict, msb: dict, label: str):
 
 
 def alert_confluence_msb(symbol: str, msb_list: list[tuple]):
-    ts = datetime.utcnow().strftime("%H:%M UTC")
+    ts = datetime.utcnow().strftime("%H:%M UTC (your local time +2h)")
     direction = msb_list[-1][1]["direction"]
     emoji = "🔴" if direction == "BEARISH" else "🟢"
     action = "SELL LIMIT" if direction == "BEARISH" else "BUY LIMIT"
@@ -155,7 +155,7 @@ def alert_confluence_msb(symbol: str, msb_list: list[tuple]):
         + "\n".join(blocks) + "\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📌 <b>Action:</b> {action}\n"
-        f"⏰ <b>Alert sent:</b> {ts}\n"
+
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🔥 <b>High confluence — priority entry!</b>"
     )
