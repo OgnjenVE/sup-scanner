@@ -3,7 +3,7 @@ telegram.py  —  Send alerts to Telegram
 """
 import requests
 from datetime import datetime
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TIMEFRAME_CONFIGS
 
 
 def _send(message: str):
@@ -27,14 +27,27 @@ def fmt(price: float) -> str:
         return f"{price:.8f}"
 
 
+def _get_candle_ms(label: str) -> int:
+    """Get candle duration in ms for a given TF label."""
+    for tf in TIMEFRAME_CONFIGS:
+        if tf["label"] == label:
+            return tf["sfp_candle_ms"]
+    return 3_600_000  # default 1H
+
+
 def _sfp_block(sfp: dict, label: str) -> str:
     direction = sfp["direction"]
     emoji = "🔴" if direction == "BEARISH" else "🟢"
     msb_tf = label.split("/")[1]
+    candle_ms = _get_candle_ms(label)
+    candle_open_ts  = sfp["candle"]["open_time"] / 1000
+    candle_close_ts = candle_open_ts + (candle_ms / 1000)
+    candle_close_str = datetime.utcfromtimestamp(candle_close_ts).strftime("%H:%M UTC")
     return (
         f"{emoji} <b>{label}</b> — {direction}\n"
         f"   📍 Swept: {fmt(sfp['swept_level'])}\n"
         f"   💵 Close: {fmt(sfp['candle']['close'])}\n"
+        f"   🕯 Candle closed: {candle_close_str}\n"
         f"   👀 Watching {msb_tf} for MSB + Breaker"
     )
 
@@ -45,8 +58,9 @@ def alert_sfp(symbol: str, sfp: dict, label: str):
     ts = datetime.utcnow().strftime("%H:%M UTC")
     msb_tf = label.split("/")[1]
 
-    # Show when the SFP candle actually closed
-    candle_close_ts = sfp["candle"]["open_time"] / 1000
+    candle_ms = _get_candle_ms(label)
+    candle_open_ts  = sfp["candle"]["open_time"] / 1000
+    candle_close_ts = candle_open_ts + (candle_ms / 1000)
     candle_close_str = datetime.utcfromtimestamp(candle_close_ts).strftime("%H:%M UTC")
 
     msg = (
@@ -56,42 +70,35 @@ def alert_sfp(symbol: str, sfp: dict, label: str):
         f"📐 <b>Direction:</b> {direction}\n"
         f"📍 <b>Swept Level:</b> {fmt(sfp['swept_level'])}\n"
         f"💵 <b>Close:</b> {fmt(sfp['candle']['close'])}\n"
-        f"🕯 <b>Candle:</b> {candle_close_str}\n"
-        f"⏰ <b>Alert:</b> {ts}\n"
+        f"🕯 <b>Candle closed:</b> {candle_close_str}\n"
+        f"⏰ <b>Alert sent:</b> {ts}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"👀 Watching {msb_tf} for MSB + Breaker..."
     )
     _send(msg)
-    print(f"[ALERT] {label} SFP sent for {symbol} {direction}")
+    print(f"[ALERT] {label} SFP sent for {symbol} {direction} | candle closed {candle_close_str}")
 
 
 def alert_confluence_sfp(symbol: str, sfp_list: list[tuple]):
-    """
-    Fire a confluence alert when multiple timeframes detect SFP simultaneously.
-    sfp_list = [(sfp_dict, label), ...]
-    """
     ts = datetime.utcnow().strftime("%H:%M UTC")
-    directions = [sfp["direction"] for sfp, _ in sfp_list]
-    # Use the higher timeframe direction for the main emoji
     direction = sfp_list[-1][0]["direction"]
     emoji = "🔴" if direction == "BEARISH" else "🟢"
-
     blocks = "\n".join(_sfp_block(sfp, label) for sfp, label in sfp_list)
 
     msg = (
         f"⭐ {emoji} <b>CONFLUENCE SFP DETECTED</b> ⭐\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🪙 <b>Symbol:</b> {symbol}\n"
-        f"📊 <b>Timeframes aligned:</b> {', '.join(l for _, l in sfp_list)}\n"
+        f"📊 <b>Timeframes:</b> {', '.join(l for _, l in sfp_list)}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"{blocks}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"⏰ <b>Time:</b> {ts}\n"
+        f"⏰ <b>Alert sent:</b> {ts}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🔥 <b>High confluence setup — priority alert!</b>"
+        f"🔥 <b>High confluence — priority alert!</b>"
     )
     _send(msg)
-    print(f"[ALERT] CONFLUENCE SFP sent for {symbol}: {[l for _, l in sfp_list]}")
+    print(f"[ALERT] CONFLUENCE SFP sent for {symbol}")
 
 
 def alert_msb_breaker(symbol: str, sfp: dict, msb: dict, label: str):
@@ -115,7 +122,7 @@ def alert_msb_breaker(symbol: str, sfp: dict, msb: dict, label: str):
         f"📌 <b>Action:</b> {action} when {zone_desc}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📌 <b>{sfp_tf} SFP Swept:</b> {fmt(sfp['swept_level'])}\n"
-        f"⏰ <b>Time:</b> {ts}\n"
+        f"⏰ <b>Alert sent:</b> {ts}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"⚡️ <b>Open chart and set limit order now!</b>"
     )
@@ -124,10 +131,6 @@ def alert_msb_breaker(symbol: str, sfp: dict, msb: dict, label: str):
 
 
 def alert_confluence_msb(symbol: str, msb_list: list[tuple]):
-    """
-    Fire confluence MSB alert when multiple timeframes confirm MSB simultaneously.
-    msb_list = [(sfp_dict, msb_dict, label), ...]
-    """
     ts = datetime.utcnow().strftime("%H:%M UTC")
     direction = msb_list[-1][1]["direction"]
     emoji = "🔴" if direction == "BEARISH" else "🟢"
@@ -149,12 +152,12 @@ def alert_confluence_msb(symbol: str, msb_list: list[tuple]):
         f"🪙 <b>Symbol:</b> {symbol}\n"
         f"📊 <b>Timeframes:</b> {', '.join(l for _, _, l in msb_list)}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"\n".join(blocks) + "\n"
+        + "\n".join(blocks) + "\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📌 <b>Action:</b> {action}\n"
-        f"⏰ <b>Time:</b> {ts}\n"
+        f"⏰ <b>Alert sent:</b> {ts}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🔥 <b>High confluence — priority entry!</b>"
     )
     _send(msg)
-    print(f"[ALERT] CONFLUENCE MSB sent for {symbol}: {[l for _, _, l in msb_list]}")
+    print(f"[ALERT] CONFLUENCE MSB sent for {symbol}")
