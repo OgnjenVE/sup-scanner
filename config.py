@@ -9,6 +9,7 @@ TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "YOUR_CHAT_ID_HERE")
 
 # --- Symbols to scan ---
 SYMBOLS = [
+    # Crypto USDT Perps
     "AAVEUSDT", "ADAUSDT", "AIXBTUSDT", "ALGOUSDT", "APTUSDT",
     "ARBUSDT", "ASTERUSDT", "ATOMUSDT", "AVAXUSDT", "BCHUSDT",
     "BNBUSDT", "BONKUSDT", "BTCUSDT", "CRVUSDT", "DOGEUSDT",
@@ -21,19 +22,32 @@ SYMBOLS = [
     "SHIBUSDT", "SOLUSDT", "STXUSDT", "SUIUSDT", "TAOUSDT",
     "TIAUSDT", "TONUSDT", "TRUMPUSDT", "TRXUSDT", "UNIUSDT",
     "VIRTUALUSDT", "WIFUSDT", "WLDUSDT", "XRPUSDT", "ZECUSDT",
+
+    # Stock Perpetuals (Bybit TradFi)
+    "METAUSDT",   # Meta (Facebook)
+    "AAPLUSDT",   # Apple
+    "TSLAUSDT",   # Tesla
+    "NVDAUSDT",   # NVIDIA
+    "AMZNUSDT",   # Amazon
+    "GOOGLUSDT",  # Alphabet (Google)
+    "MSFTUSDT",   # Microsoft
+    "COINUSDT",   # Coinbase
+    "MSTRUSDT",   # MicroStrategy
+    "NFLXUSDT",   # Netflix
+    "AMDUSDT",    # AMD
+    "INTCUSDT",   # Intel
+    "UBERUSDT",   # Uber
+    "ABNBUSDT",   # Airbnb
+    "SOFIUSDT",   # SoFi
+    "IONQUSDT",   # IonQ
+    "PLTRUSDT",   # Palantir
+    "RKLBUSDT",   # Rocket Lab
+    "SNDKUSDT",   # SoundHound
+    "AMDUDT",     # AMD (alt ticker)
 ]
 
 # ============================================================
 #  TIMEFRAME CONFIGURATIONS
-#  Each entry defines one complete SFP setup:
-#    sfp_tf       — timeframe to scan for SFP
-#    msb_tf       — timeframe to watch for MSB + Breaker
-#    sfp_pivot    — candles each side for H1/4H/Daily swing detection
-#    msb_pivot    — candles each side for MSB swing detection
-#    sfp_lookback — how many candles back to look for swing points
-#    watch_hours  — how long to watch MSB tf after SFP fires
-#    sfp_candle_ms— candle duration in milliseconds (for freshness check)
-#    label        — display name in Telegram alerts
 # ============================================================
 TIMEFRAME_CONFIGS = [
     {
@@ -44,7 +58,7 @@ TIMEFRAME_CONFIGS = [
         "msb_pivot":     5,
         "sfp_lookback":  30,
         "watch_hours":   4,
-        "sfp_candle_ms": 3_600_000,       # 1 hour in ms
+        "sfp_candle_ms": 3_600_000,
     },
     {
         "label":         "4H/15M",
@@ -54,7 +68,7 @@ TIMEFRAME_CONFIGS = [
         "msb_pivot":     4,
         "sfp_lookback":  30,
         "watch_hours":   12,
-        "sfp_candle_ms": 14_400_000,      # 4 hours in ms
+        "sfp_candle_ms": 14_400_000,
     },
     {
         "label":         "Daily/4H",
@@ -63,8 +77,8 @@ TIMEFRAME_CONFIGS = [
         "sfp_pivot":     5,
         "msb_pivot":     3,
         "sfp_lookback":  30,
-        "watch_hours":   72,              # 3 days
-        "sfp_candle_ms": 86_400_000,      # 1 day in ms
+        "watch_hours":   72,
+        "sfp_candle_ms": 86_400_000,
     },
 ]
 
