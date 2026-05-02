@@ -2,6 +2,7 @@
 scanner.py  —  Multi-timeframe SFP Scanner
 Timeframe pairs: H1/M5, 4H/15M, Daily/4H
 Data sources: OKX (primary) → Bybit (fallback)
+Confluence detection: fires special alert when multiple TFs align
 """
 import time
 import traceback
@@ -11,14 +12,14 @@ from config import SYMBOLS, SCAN_INTERVAL_SEC, TIMEFRAME_CONFIGS
 import okx
 import bybit
 from strategy import detect_sfp, detect_msb_and_breaker
-from telegram import alert_sfp, alert_msb_breaker
+from telegram import alert_sfp, alert_msb_breaker, alert_confluence_sfp, alert_confluence_msb
 
 
-# active_sfps: { (symbol, label): { sfp, detected_at, msb_alerted } }
+# active_sfps: { (symbol, label): { sfp, detected_at, msb_alerted, tf_config } }
 active_sfps: dict = {}
 symbol_source: dict = {}
 
-SFP_ALERT_MAX_AGE = SCAN_INTERVAL_SEC * 2   # 120s freshness window
+SFP_ALERT_MAX_AGE = SCAN_INTERVAL_SEC * 2
 
 
 def now_ts() -> float:
@@ -72,80 +73,144 @@ def validate_symbols(symbols: list[str]) -> list[str]:
     return valid
 
 
-def scan_sfp(symbol: str, tf_config: dict):
-    """Scan one symbol on the SFP timeframe."""
-    label       = tf_config["label"]
-    sfp_tf      = tf_config["sfp_tf"]
-    sfp_pivot   = tf_config["sfp_pivot"]
-    sfp_lookback= tf_config["sfp_lookback"]
-    candle_ms   = tf_config["sfp_candle_ms"]
-    watch_hours = tf_config["watch_hours"]
+def scan_all_sfps(valid_symbols: list[str]):
+    """
+    Scan all symbols across all timeframes for SFPs.
+    Detect confluence when multiple TFs fire on the same symbol.
+    """
+    # Collect all new SFPs this cycle: { symbol: [(sfp, label, tf_config)] }
+    new_sfps: dict = {}
 
-    limit = sfp_lookback + sfp_pivot + 5
-    candles = get_candles_any(symbol, sfp_tf, limit)
-    if not candles:
-        return
+    for tf_config in TIMEFRAME_CONFIGS:
+        label        = tf_config["label"]
+        sfp_tf       = tf_config["sfp_tf"]
+        sfp_pivot    = tf_config["sfp_pivot"]
+        sfp_lookback = tf_config["sfp_lookback"]
+        candle_ms    = tf_config["sfp_candle_ms"]
 
-    sfp = detect_sfp(candles, sfp_pivot, sfp_lookback)
-    if sfp is None:
-        return
+        limit = sfp_lookback + 20
+        for symbol in valid_symbols:
+            try:
+                candles = get_candles_any(symbol, sfp_tf, limit)
+                if not candles:
+                    continue
 
-    sfp_candle_time    = sfp["candle"]["open_time"]
-    sfp_close_time_sec = (sfp_candle_time + candle_ms) / 1000
-    age_seconds        = now_ts() - sfp_close_time_sec
+                sfp = detect_sfp(candles, sfp_pivot, sfp_lookback)
+                if sfp is None:
+                    continue
 
-    if age_seconds < 0 or age_seconds > SFP_ALERT_MAX_AGE:
-        return
+                sfp_candle_time    = sfp["candle"]["open_time"]
+                sfp_close_time_sec = (sfp_candle_time + candle_ms) / 1000
+                age_seconds        = now_ts() - sfp_close_time_sec
 
-    key = (symbol, label)
-    if key in active_sfps:
-        if active_sfps[key]["sfp"]["candle"]["open_time"] == sfp_candle_time:
-            return
+                if age_seconds < 0 or age_seconds > SFP_ALERT_MAX_AGE:
+                    continue
 
-    active_sfps[key] = {
-        "sfp":         sfp,
-        "detected_at": now_ts(),
-        "msb_alerted": False,
-        "tf_config":   tf_config,
-    }
-    alert_sfp(symbol, sfp, label)
+                key = (symbol, label)
+                if key in active_sfps:
+                    if active_sfps[key]["sfp"]["candle"]["open_time"] == sfp_candle_time:
+                        continue  # already alerted
+
+                # New SFP found — add to active watches
+                active_sfps[key] = {
+                    "sfp":         sfp,
+                    "detected_at": now_ts(),
+                    "msb_alerted": False,
+                    "tf_config":   tf_config,
+                }
+
+                # Track for confluence detection
+                if symbol not in new_sfps:
+                    new_sfps[symbol] = []
+                new_sfps[symbol].append((sfp, label, tf_config))
+
+            except Exception:
+                print(f"[ERROR] SFP scan failed {symbol} {label}:")
+                traceback.print_exc()
+            time.sleep(0.05)
+
+    # Fire alerts — confluence if multiple TFs, individual if single
+    for symbol, sfp_entries in new_sfps.items():
+        if len(sfp_entries) >= 2:
+            # Check all same direction for cleaner confluence
+            directions = set(sfp["direction"] for sfp, _, _ in sfp_entries)
+            if len(directions) == 1:
+                # All same direction — fire confluence alert
+                alert_confluence_sfp(symbol, [(sfp, label) for sfp, label, _ in sfp_entries])
+            else:
+                # Different directions — fire separately
+                for sfp, label, _ in sfp_entries:
+                    alert_sfp(symbol, sfp, label)
+        else:
+            sfp, label, _ = sfp_entries[0]
+            alert_sfp(symbol, sfp, label)
 
 
-def scan_msb(symbol: str, state: dict) -> bool:
-    """Watch MSB timeframe after SFP detected."""
-    sfp       = state["sfp"]
-    detected  = state["detected_at"]
-    tf_config = state["tf_config"]
-    label     = tf_config["label"]
-    msb_tf    = tf_config["msb_tf"]
-    msb_pivot = tf_config["msb_pivot"]
-    watch_h   = tf_config["watch_hours"]
+def scan_all_msbs():
+    """
+    Scan MSB timeframe for all active SFP watches.
+    Detect confluence when multiple TFs confirm MSB on same symbol.
+    """
+    # Collect new MSB confirmations: { symbol: [(sfp, msb, label)] }
+    new_msbs: dict = {}
 
-    if (now_ts() - detected) / 3600 > watch_h:
-        print(f"[INFO] {label} watch expired for {symbol}")
-        return False
+    to_remove = []
+    for key, state in list(active_sfps.items()):
+        symbol, label = key
+        sfp       = state["sfp"]
+        detected  = state["detected_at"]
+        tf_config = state["tf_config"]
+        msb_tf    = tf_config["msb_tf"]
+        msb_pivot = tf_config["msb_pivot"]
+        watch_h   = tf_config["watch_hours"]
 
-    if state["msb_alerted"]:
-        return True
+        if (now_ts() - detected) / 3600 > watch_h:
+            print(f"[INFO] {label} watch expired for {symbol}")
+            to_remove.append(key)
+            continue
 
-    # Calculate how many MSB candles to fetch
-    candle_minutes = {"5m": 5, "15m": 15, "4h": 240}.get(msb_tf, 60)
-    msb_limit = int(watch_h * 60 / candle_minutes) + 10
+        if state["msb_alerted"]:
+            continue
 
-    candles = get_candles_any(symbol, msb_tf, msb_limit)
-    if not candles:
-        return True
+        candle_minutes = {"5m": 5, "15m": 15, "4h": 240}.get(msb_tf, 60)
+        msb_limit = int(watch_h * 60 / candle_minutes) + 10
 
-    candles_after = [c for c in candles if c["open_time"] >= detected * 1000]
-    if len(candles_after) < msb_pivot * 2 + 2:
-        return True
+        try:
+            candles = get_candles_any(symbol, msb_tf, msb_limit)
+            if not candles:
+                continue
 
-    msb = detect_msb_and_breaker(candles_after, sfp["direction"], msb_pivot)
-    if msb:
-        alert_msb_breaker(symbol, sfp, msb, label)
-        state["msb_alerted"] = True
+            candles_after = [c for c in candles if c["open_time"] >= detected * 1000]
+            if len(candles_after) < 10:
+                continue
 
-    return True
+            msb = detect_msb_and_breaker(candles_after, sfp["direction"], msb_pivot)
+            if msb:
+                state["msb_alerted"] = True
+                if symbol not in new_msbs:
+                    new_msbs[symbol] = []
+                new_msbs[symbol].append((sfp, msb, label))
+
+        except Exception:
+            print(f"[ERROR] MSB scan failed {symbol} {label}:")
+            traceback.print_exc()
+        time.sleep(0.05)
+
+    for k in to_remove:
+        del active_sfps[k]
+
+    # Fire MSB alerts — confluence if multiple TFs, individual if single
+    for symbol, msb_entries in new_msbs.items():
+        if len(msb_entries) >= 2:
+            directions = set(msb["direction"] for _, msb, _ in msb_entries)
+            if len(directions) == 1:
+                alert_confluence_msb(symbol, msb_entries)
+            else:
+                for sfp, msb, label in msb_entries:
+                    alert_msb_breaker(symbol, sfp, msb, label)
+        else:
+            sfp, msb, label = msb_entries[0]
+            alert_msb_breaker(symbol, sfp, msb, label)
 
 
 def run():
@@ -155,6 +220,7 @@ def run():
     print(f"  Timeframe pairs    : {[c['label'] for c in TIMEFRAME_CONFIGS]}")
     print(f"  SFP freshness      : {SFP_ALERT_MAX_AGE}s")
     print(f"  Data sources       : OKX → Bybit fallback")
+    print(f"  Confluence alerts  : enabled")
     print("=" * 55)
 
     valid_symbols = validate_symbols(SYMBOLS)
@@ -168,33 +234,10 @@ def run():
         try:
             scan_start = time.time()
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            print(f"[{ts}] Scanning {len(valid_symbols)} symbols x {len(TIMEFRAME_CONFIGS)} TFs...")
+            print(f"[{ts}] Scanning {len(valid_symbols)} x {len(TIMEFRAME_CONFIGS)} TFs...")
 
-            # Scan SFP for all symbols and all timeframe configs
-            for tf_config in TIMEFRAME_CONFIGS:
-                for symbol in valid_symbols:
-                    try:
-                        scan_sfp(symbol, tf_config)
-                    except Exception:
-                        print(f"[ERROR] SFP scan failed {symbol} {tf_config['label']}:")
-                        traceback.print_exc()
-                    time.sleep(0.05)
-
-            # Scan MSB for all active watches
-            to_remove = []
-            for key, state in list(active_sfps.items()):
-                symbol, label = key
-                try:
-                    keep = scan_msb(symbol, state)
-                    if not keep:
-                        to_remove.append(key)
-                except Exception:
-                    print(f"[ERROR] MSB scan failed {symbol} {label}:")
-                    traceback.print_exc()
-                time.sleep(0.05)
-
-            for k in to_remove:
-                del active_sfps[k]
+            scan_all_sfps(valid_symbols)
+            scan_all_msbs()
 
             elapsed = time.time() - scan_start
             watching = [f"{s}({l})" for s, l in active_sfps.keys()] or ["none"]
