@@ -15,11 +15,14 @@ from strategy import detect_sfp, detect_msb_and_breaker
 from telegram import alert_sfp, alert_msb_breaker, alert_confluence_sfp, alert_confluence_msb
 
 
-# active_sfps: { (symbol, label): { sfp, detected_at, msb_alerted, tf_config } }
 active_sfps: dict = {}
 symbol_source: dict = {}
 
-SFP_ALERT_MAX_AGE = SCAN_INTERVAL_SEC * 2
+SFP_ALERT_MAX_AGE = SCAN_INTERVAL_SEC * 2  # 120s
+
+# Track candle open_times we have already alerted to prevent
+# any duplicate fires across restarts
+alerted_candles: set = set()   # { (symbol, label, candle_open_time) }
 
 
 def now_ts() -> float:
@@ -74,11 +77,6 @@ def validate_symbols(symbols: list[str]) -> list[str]:
 
 
 def scan_all_sfps(valid_symbols: list[str]):
-    """
-    Scan all symbols across all timeframes for SFPs.
-    Detect confluence when multiple TFs fire on the same symbol.
-    """
-    # Collect all new SFPs this cycle: { symbol: [(sfp, label, tf_config)] }
     new_sfps: dict = {}
 
     for tf_config in TIMEFRAME_CONFIGS:
@@ -103,15 +101,23 @@ def scan_all_sfps(valid_symbols: list[str]):
                 sfp_close_time_sec = (sfp_candle_time + candle_ms) / 1000
                 age_seconds        = now_ts() - sfp_close_time_sec
 
+                # Freshness check — candle must have closed within last 2 scan cycles
                 if age_seconds < 0 or age_seconds > SFP_ALERT_MAX_AGE:
                     continue
 
+                # Global dedup — never alert the same candle twice even across restarts
+                dedup_key = (symbol, label, sfp_candle_time)
+                if dedup_key in alerted_candles:
+                    continue
+
+                # Also check active_sfps
                 key = (symbol, label)
                 if key in active_sfps:
                     if active_sfps[key]["sfp"]["candle"]["open_time"] == sfp_candle_time:
-                        continue  # already alerted
+                        continue
 
-                # New SFP found — add to active watches
+                # Valid fresh SFP — add to watches and dedup set
+                alerted_candles.add(dedup_key)
                 active_sfps[key] = {
                     "sfp":         sfp,
                     "detected_at": now_ts(),
@@ -119,7 +125,6 @@ def scan_all_sfps(valid_symbols: list[str]):
                     "tf_config":   tf_config,
                 }
 
-                # Track for confluence detection
                 if symbol not in new_sfps:
                     new_sfps[symbol] = []
                 new_sfps[symbol].append((sfp, label, tf_config))
@@ -129,16 +134,13 @@ def scan_all_sfps(valid_symbols: list[str]):
                 traceback.print_exc()
             time.sleep(0.05)
 
-    # Fire alerts — confluence if multiple TFs, individual if single
+    # Fire alerts
     for symbol, sfp_entries in new_sfps.items():
         if len(sfp_entries) >= 2:
-            # Check all same direction for cleaner confluence
             directions = set(sfp["direction"] for sfp, _, _ in sfp_entries)
             if len(directions) == 1:
-                # All same direction — fire confluence alert
                 alert_confluence_sfp(symbol, [(sfp, label) for sfp, label, _ in sfp_entries])
             else:
-                # Different directions — fire separately
                 for sfp, label, _ in sfp_entries:
                     alert_sfp(symbol, sfp, label)
         else:
@@ -147,14 +149,9 @@ def scan_all_sfps(valid_symbols: list[str]):
 
 
 def scan_all_msbs():
-    """
-    Scan MSB timeframe for all active SFP watches.
-    Detect confluence when multiple TFs confirm MSB on same symbol.
-    """
-    # Collect new MSB confirmations: { symbol: [(sfp, msb, label)] }
     new_msbs: dict = {}
-
     to_remove = []
+
     for key, state in list(active_sfps.items()):
         symbol, label = key
         sfp       = state["sfp"]
@@ -199,7 +196,7 @@ def scan_all_msbs():
     for k in to_remove:
         del active_sfps[k]
 
-    # Fire MSB alerts — confluence if multiple TFs, individual if single
+    # Fire MSB alerts
     for symbol, msb_entries in new_msbs.items():
         if len(msb_entries) >= 2:
             directions = set(msb["direction"] for _, msb, _ in msb_entries)

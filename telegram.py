@@ -45,6 +45,10 @@ def alert_sfp(symbol: str, sfp: dict, label: str):
     ts = datetime.utcnow().strftime("%H:%M UTC")
     msb_tf = label.split("/")[1]
 
+    # Show when the SFP candle actually closed
+    candle_close_ts = sfp["candle"]["open_time"] / 1000
+    candle_close_str = datetime.utcfromtimestamp(candle_close_ts).strftime("%H:%M UTC")
+
     msg = (
         f"{emoji} <b>{label} SFP DETECTED</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
@@ -52,7 +56,8 @@ def alert_sfp(symbol: str, sfp: dict, label: str):
         f"📐 <b>Direction:</b> {direction}\n"
         f"📍 <b>Swept Level:</b> {fmt(sfp['swept_level'])}\n"
         f"💵 <b>Close:</b> {fmt(sfp['candle']['close'])}\n"
-        f"⏰ <b>Time:</b> {ts}\n"
+        f"🕯 <b>Candle:</b> {candle_close_str}\n"
+        f"⏰ <b>Alert:</b> {ts}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"👀 Watching {msb_tf} for MSB + Breaker..."
     )
